@@ -259,6 +259,18 @@ body {
   background: linear-gradient(to bottom, rgba(13, 17, 32, 0), rgba(13, 17, 32, .85) 55%);
 }
 
+.title__links {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 12px;
+}
+
+.title__links a {
+  color: rgba(255, 255, 255, .78);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 /* ------------------------------------------------------------
    ボタン
    ------------------------------------------------------------ */
