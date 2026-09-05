@@ -74,6 +74,16 @@ function run(types, aimError, seed, shakeOn = true) {
   const bodies = [];
   let stepMs = 0, stepCount = 0;
 
+  // game.js の guardTiltedSleep と同じ。傾いた body は眠らせない。
+  const guardTilt = () => {
+    const lim = C.tiltNoSleepDeg; if (!lim) return;
+    for (const b of bodies) {
+      const d = Math.abs(b.angle * 180 / Math.PI) % 90, tilt = Math.min(d, 90 - d);
+      if (tilt > lim) { b.sleepThreshold = Infinity; if (b.isSleeping) Sleeping.set(b, false); }
+      else if (b.sleepThreshold !== 60) b.sleepThreshold = 60;
+    }
+  };
+
   // game.js の applyWobble と同じ「揺れの伝播」。
   // これが難易度に効くので、ハーネスにも入れておかないと実際と乖離する。
   const S = C.shake;
@@ -148,6 +158,7 @@ function run(types, aimError, seed, shakeOn = true) {
     for (let i = 0; i < SETTLE; i++) {
       const t0 = performance.now();
       Engine.update(engine, STEP);
+      guardTilt();
       stepMs += performance.now() - t0;
       stepCount++;
     }
@@ -155,7 +166,7 @@ function run(types, aimError, seed, shakeOn = true) {
   }
 
   // 積み終わってから5秒放置しても崩れないか
-  for (let i = 0; i < 300; i++) Engine.update(engine, STEP);
+  for (let i = 0; i < 300; i++) { Engine.update(engine, STEP); guardTilt(); }
   for (const b of bodies) if (b.position.y > C.fallLimitY) return { n: DROPS, done: false };
 
   let top = 0, sleeping = 0;

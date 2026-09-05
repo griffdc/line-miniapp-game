@@ -244,17 +244,6 @@
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // ハイライト。変形に合わせて少し動かすと表面の張りが出る
-      var shine = body.wobOff[Math.floor(n * 0.875)] || 0;
-      ctx.fillStyle = 'rgba(255,255,255,.55)';
-      ctx.beginPath();
-      ctx.ellipse(
-        -type.w * 0.18, -type.h * 0.24 + shine * 0.5,
-        type.w * 0.13, type.h * 0.075,
-        -0.35, 0, Math.PI * 2
-      );
-      ctx.fill();
-
       ctx.restore();
     },
 

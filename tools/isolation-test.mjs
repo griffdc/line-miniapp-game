@@ -84,7 +84,9 @@ function makeWorld(shakeOn = true, S = C.shake) {
     });
     Composite.add(engine.world, b); bodies.push(b); return b;
   };
-  const step = n => { for (let i = 0; i < n; i++) Engine.update(engine, STEP); };
+  const step = n => { for (let i = 0; i < n; i++) { Engine.update(engine, STEP);
+    const lim = C.tiltNoSleepDeg; if (lim) for (const b of bodies) { const d = Math.abs(b.angle * 180 / Math.PI) % 90, t = Math.min(d, 90 - d);
+      if (t > lim) { b.sleepThreshold = Infinity; if (b.isSleeping) Sleeping.set(b, false); } else if (b.sleepThreshold !== 60) b.sleepThreshold = 60; } } };
   return { engine, bodies, drop, step, platformHalf: pw / 2 };
 }
 

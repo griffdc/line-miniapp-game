@@ -130,6 +130,16 @@ body {
   font-weight: 700;
 }
 
+/* 右寄せにしてドロッパー（画面中央）と重ならないようにする */
+.hud__stage {
+  margin: 6px 0 0;
+  color: rgba(255, 255, 255, .92);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+}
+
 .hud__hint {
   margin: 20px 0 0;
   color: var(--text-dim);
@@ -155,6 +165,16 @@ body {
 
 /* 結果表示 */
 .overlay--result { background: rgba(10, 13, 24, .92); }
+
+.result__stage {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  letter-spacing: .06em;
+}
+
+.overlay--clear { background: rgba(6, 40, 34, .93); }
+.overlay--clear .result__label { color: #7dffcf; font-size: 20px; font-weight: 800; }
 
 .result__label {
   margin: 0;

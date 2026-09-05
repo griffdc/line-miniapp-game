@@ -35,11 +35,16 @@
     rafId: 0,
     lastTime: 0,
     accumulator: 0,
-    state: 'idle', // 'idle' | 'playing' | 'over'
+    state: 'idle', // 'idle' | 'playing' | 'over' | 'clear'
 
     round: 0,
     score: 0,
     best: 0,
+
+    /** ステージ。stage は挑戦中、cleared は到達済み（保存される） */
+    stage: 1,
+    cleared: 0,
+    holdFrames: 0, // ゴールバーを超え続けているフレーム数
 
     /** ワールド座標。地面の上面を y = 0 とし、上方向が負。 */
     camera: { y: 0, target: 0 },
@@ -62,6 +67,7 @@
       if (this.debug.on) document.getElementById('debug').hidden = false;
 
       this.best = this.loadBest();
+      this.cleared = this.loadStage();
       this.boundLoop = this.loop.bind(this); // 毎フレーム bind し直さない
       this.loadBackground();
 
@@ -195,6 +201,8 @@
       this.resetWorld();
       this.state = 'playing';
       this.score = 0;
+      this.stage = this.cleared + 1; // 崩れたら同じステージ、クリアしたら次
+      this.holdFrames = 0;
       this.camera.y = this.camera.base;
       this.camera.target = this.camera.base;
       this.accumulator = 0;
@@ -208,6 +216,7 @@
       document.getElementById('title').classList.add('title--hidden');
       document.getElementById('hud-hint').hidden = false;
       this.setScore(0);
+      this.renderStage();
 
       this.lastTime = performance.now();
       if (!this.rafId) this.rafId = requestAnimationFrame(this.boundLoop);
@@ -230,6 +239,7 @@
         var steps = 0;
         while (this.accumulator >= FIXED_STEP && steps < MAX_STEPS_PER_FRAME) {
           Engine.update(this.engine, FIXED_STEP);
+          this.guardTiltedSleep();
           Jelly.step(this.jellies); // 変形も物理と同じ固定ステップで進める
           this.accumulator -= FIXED_STEP;
           steps++;
@@ -239,12 +249,36 @@
         this.updateCamera();
         this.updateScore();
         this.checkCollapse();
+        this.checkClear();
       }
 
       var d0 = performance.now();
       this.draw();
       this.debug.drawMs = performance.now() - d0;
       this.tickDebug(now);
+    },
+
+    /**
+     * 傾いている body を眠らせない。
+     * 皿の端でゆっくり倒れかけている body は速度がほぼ 0 なので、Matter は
+     * 「静止した」と判断して sleep させ、傾いたまま固まる。
+     * 水平（90°の倍数）から tiltNoSleepDeg 以上ずれている間だけ sleep を止め、
+     * 倒れるか水平に戻るかを物理に決めさせる。
+     */
+    guardTiltedSleep: function () {
+      var limit = CONFIG.tiltNoSleepDeg;
+      if (!limit) return;
+      for (var i = 0; i < this.jellies.length; i++) {
+        var b = this.jellies[i];
+        var d = Math.abs(b.angle * 180 / Math.PI) % 90;
+        var tilt = Math.min(d, 90 - d);
+        if (tilt > limit) {
+          b.sleepThreshold = Infinity;
+          if (b.isSleeping) Sleeping.set(b, false);
+        } else if (b.sleepThreshold !== 60) {
+          b.sleepThreshold = 60; // Matter の既定値に戻す
+        }
+      }
     },
 
     /**
@@ -421,6 +455,51 @@
       }
     },
 
+    // ------------------------------------------------------------------
+    // ステージ
+    // ------------------------------------------------------------------
+    goalCm: function (stage) {
+      var S = CONFIG.stages;
+      var list = S.goalsCm;
+      if (stage <= list.length) return list[stage - 1];
+      return list[list.length - 1] + (stage - list.length) * S.stepBeyondCm;
+    },
+
+    /** ゴールバーのワールドy。地面が0、上が負 */
+    goalY: function () {
+      return -this.goalCm(this.stage) * CONFIG.pxPerCm;
+    },
+
+    /**
+     * クリア判定。着地済みのゼリーの最上部がバーを超えた状態を
+     * holdFrames のあいだ維持したら成立。跳ねて一瞬超えたのでは成立しない。
+     */
+    checkClear: function () {
+      if (this.state !== 'playing') return;
+      if (this.towerTopY() <= this.goalY()) this.holdFrames++;
+      else this.holdFrames = 0;
+      if (this.holdFrames >= CONFIG.stages.holdFrames) this.stageClear();
+    },
+
+    stageClear: function () {
+      if (this.state !== 'playing') return;
+      this.state = 'clear';
+      this.round += 1;
+
+      if (this.stage > this.cleared) {
+        this.cleared = this.stage;
+        this.saveStage(this.cleared); // リロードしても続きから
+      }
+      if (this.score > this.best) {
+        this.best = this.score;
+        this.saveBest(this.best);
+      }
+
+      document.getElementById('clear-stage').textContent = String(this.stage);
+      document.getElementById('clear-height').textContent = String(this.score);
+      document.getElementById('clear').classList.remove('overlay--hidden');
+    },
+
     gameOver: function () {
       if (this.state !== 'playing') return;
       this.state = 'over';
@@ -453,6 +532,7 @@
     },
 
     showResult: function () {
+      document.getElementById('result-stage').textContent = 'ステージ ' + this.stage;
       document.getElementById('result-score').textContent = String(this.score);
       document.getElementById('result-best').textContent =
         this.best > 0 ? 'ベスト ' + this.best + 'cm' : '';
@@ -484,21 +564,51 @@
       for (var i = 0; i < this.jellies.length; i++) {
         this.drawBody(ctx, this.jellies[i]);
       }
+      this.drawGoal(ctx);
       if (this.state === 'playing') this.drawDropper(ctx);
 
       ctx.restore();
     },
 
+    /**
+     * 背景。皿の上面が world y = 0 に来るようワールドに固定して描く。
+     *
+     * 画像の上下は、画面が縦に長いときや塔が伸びたときに露出する。
+     * べた塗りで埋めると継ぎ目がはっきり出るので、
+     * 画像の端の1行を引き伸ばして繋ぐ。色が完全に連続する。
+     */
     drawBackground: function (ctx) {
       var bg = this.bg;
       if (!bg) return;
 
-      // 画像より下（皿の脚より下）を塗る。空のままだと下が青く抜ける。
-      ctx.fillStyle = CONFIG.background.floorColor;
-      ctx.fillRect(-bg.w / 2, bg.top + bg.h - 1, bg.w, 1200);
+      var left = -bg.w / 2;
+      var img = this.bgImage;
+      var ready = img && img.complete && img.naturalWidth;
 
-      if (this.bgImage && this.bgImage.complete && this.bgImage.naturalWidth) {
-        ctx.drawImage(this.bgImage, -bg.w / 2, bg.top, bg.w, bg.h);
+      // 画面のどこまで埋める必要があるかは、カメラ位置から決まる
+      var viewTop = this.camera.y;
+      var viewBottom = this.camera.y + this.viewH;
+      var above = Math.max(0, bg.top - viewTop) + 2;          // 画像より上の露出分
+      var below = Math.max(0, viewBottom - (bg.top + bg.h)) + 2; // 画像より下の露出分
+
+      if (!ready) {
+        // 読み込み前は近い色で塗っておく（切り替わりを目立たせない）
+        ctx.fillStyle = CONFIG.background.skyColor;
+        ctx.fillRect(left, bg.top - above, bg.w, above + bg.h);
+        ctx.fillStyle = CONFIG.background.floorColor;
+        ctx.fillRect(left, bg.top + bg.h, bg.w, below);
+        return;
+      }
+
+      var iw = img.naturalWidth, ih = img.naturalHeight;
+
+      if (above > 0) {
+        // 上端1行を上方向へ引き伸ばす。1pxぶん重ねて隙間を防ぐ
+        ctx.drawImage(img, 0, 0, iw, 1, left, bg.top - above, bg.w, above + 1);
+      }
+      ctx.drawImage(img, left, bg.top, bg.w, bg.h);
+      if (below > 0) {
+        ctx.drawImage(img, 0, ih - 1, iw, 1, left, bg.top + bg.h - 1, bg.w, below + 1);
       }
     },
 
@@ -522,6 +632,40 @@
     },
 
     /** 落下位置のガイド。指の位置と落下点を一致させる */
+    /** ゴールバー。ワールドに固定するので塔と一緒にスクロールする */
+    drawGoal: function (ctx) {
+      if (this.state === 'idle') return;
+      var y = this.goalY();
+      var half = this.viewW / 2;
+      var reached = this.holdFrames > 0;
+
+      ctx.save();
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 8]);
+      ctx.strokeStyle = reached ? '#7dffcf' : '#ffd93d';
+      ctx.shadowColor = 'rgba(0,0,0,.35)';
+      ctx.shadowBlur = 4;
+      ctx.beginPath();
+      ctx.moveTo(-half + 12, y);
+      ctx.lineTo(half - 12, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+
+      // 右端のラベル
+      var label = reached ? 'CLEAR!' : 'GOAL ' + this.goalCm(this.stage) + 'cm';
+      ctx.font = '700 11px -apple-system, BlinkMacSystemFont, sans-serif';
+      var tw = ctx.measureText(label).width;
+      var bx = half - 12 - tw - 14, by = y - 22;
+      ctx.fillStyle = reached ? '#7dffcf' : '#ffd93d';
+      this.roundRect(ctx, bx, by, tw + 14, 18, 6);
+      ctx.fill();
+      ctx.fillStyle = '#1b2440';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, bx + 7, by + 9);
+      ctx.restore();
+    },
+
     drawDropper: function (ctx) {
       var y = this.dropperWorldY();
       var type = this.dropper.type;
@@ -595,6 +739,17 @@
       el.addEventListener('pointerup', release);
       el.addEventListener('pointercancel', function () { pointing = false; });
 
+      var next = document.getElementById('clear-next');
+      next.addEventListener('click', function () {
+        if (next.disabled) return;
+        next.disabled = true;
+        document.getElementById('clear').classList.add('overlay--hidden');
+        self.showRetryAd().then(function () {
+          next.disabled = false;
+          self.start();
+        });
+      });
+
       var retry = document.getElementById('result-retry');
       retry.addEventListener('click', function () {
         if (retry.disabled) return;
@@ -615,6 +770,18 @@
       this.score = value;
       var el = document.getElementById('hud-score');
       if (el) el.textContent = String(value);
+      this.renderStage();
+    },
+
+    /** ステージ番号・目標・残りをHUDに出す。バーが画面外なら ▲ を付ける */
+    renderStage: function () {
+      var el = document.getElementById('hud-stage');
+      if (!el) return;
+      var goal = this.goalCm(this.stage);
+      var remain = Math.max(0, goal - this.score);
+      var offscreen = (this.goalY() - this.camera.y) < 0;
+      el.textContent = 'ステージ ' + this.stage + '　目標 ' + goal + 'cm　' +
+        (remain === 0 ? 'とどいた！' : (offscreen ? '▲ ' : '') + 'あと ' + remain + 'cm');
     },
 
     renderNextSwatch: function () {
@@ -630,6 +797,16 @@
 
     saveBest: function (v) {
       try { localStorage.setItem(window.APP_CONFIG.storagePrefix + 'best', String(v)); } catch (e) { /* 非対応環境は諦める */ }
+    },
+
+    loadStage: function () {
+      try {
+        return parseInt(localStorage.getItem(window.APP_CONFIG.storagePrefix + 'stage') || '0', 10) || 0;
+      } catch (e) { return 0; }
+    },
+
+    saveStage: function (v) {
+      try { localStorage.setItem(window.APP_CONFIG.storagePrefix + 'stage', String(v)); } catch (e) { /* 非対応環境は諦める */ }
     },
 
     /** 積載の安定性を数値で確認するための計器。?debug=1 で表示 */

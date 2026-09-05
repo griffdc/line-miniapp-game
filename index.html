@@ -55,6 +55,7 @@
           <span id="hud-score" class="hud__score">0</span><span class="hud__unit">cm</span>
         </div>
       </div>
+      <p class="hud__stage" id="hud-stage"></p>
       <p class="hud__hint" id="hud-hint">画面をなぞって、指をはなすと落ちる</p>
     </div>
 
@@ -96,12 +97,23 @@
 
 <!-- 結果表示。シェアはLINEアプリ内でのみ表示する -->
 <div id="result" class="overlay overlay--hidden overlay--result">
+  <p class="result__stage" id="result-stage"></p>
   <p class="result__label">くずれた！</p>
   <p class="result__score"><span id="result-score">0</span><span class="hud__unit">cm</span></p>
   <p class="result__best" id="result-best"></p>
   <div class="result__actions">
     <button type="button" class="btn" id="result-retry">もう一度</button>
     <button type="button" class="btn btn--ghost" id="btn-share" hidden>結果をシェア</button>
+  </div>
+</div>
+
+<!-- ステージクリア -->
+<div id="clear" class="overlay overlay--hidden overlay--result overlay--clear">
+  <p class="result__stage">ステージ <span id="clear-stage">1</span></p>
+  <p class="result__label">クリア！</p>
+  <p class="result__score"><span id="clear-height">0</span><span class="hud__unit">cm</span></p>
+  <div class="result__actions">
+    <button type="button" class="btn" id="clear-next">つぎのステージ</button>
   </div>
 </div>
 
