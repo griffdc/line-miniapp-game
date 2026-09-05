@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MATTER = resolve(HERE, 'matter.min.js');
 if (!existsSync(MATTER)) { console.error('tools/matter.min.js がありません（stack-test.mjs 冒頭を参照）'); process.exit(1); }
-const { Engine, Composite, Bodies, Sleeping } = createRequire(import.meta.url)(MATTER);
+const { Engine, Composite, Bodies, Body, Sleeping } = createRequire(import.meta.url)(MATTER);
 
 global.window = { location: { hostname: 'localhost', pathname: '/' } };
 global.location = global.window.location;
@@ -34,8 +34,9 @@ function trial(over, type) {
   const b = Bodies.rectangle(-pw / 2 + type.w * (0.5 - over), -160, type.w, type.h, {
     chamfer: { radius: Math.min(type.w, type.h) * C.chamferRatio },
     friction: C.friction, frictionStatic: C.frictionStatic, frictionAir: C.frictionAir,
-    restitution: C.restitution, density: C.density });
+    restitution: C.restitution, slop: C.sinkPx, density: C.density });
   Composite.add(e.world, b);
+  if (C.dropSpin) Body.setAngularVelocity(b, C.dropSpin); // 端では回転の向きが効くので、はみ出し側へ倒れる向きで固定
   for (let i = 0; i < 600; i++) {
     Engine.update(e, STEP);
     const d = Math.abs(b.angle * 180 / Math.PI) % 90, t = Math.min(d, 90 - d);

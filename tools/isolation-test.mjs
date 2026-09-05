@@ -50,27 +50,35 @@ function makeWorld(shakeOn = true, S = C.shake) {
 
   Events.on(engine, 'collisionStart', ev => {
     if (!shakeOn || S.scale <= 0) return;
+    // game.js の applyWobble と同じ: lander の最初の接触でだけ、受け手の中心からのずれに比例して揺らす
     const graph = contactGraph();
     for (const pair of ev.pairs) {
-      const sup = pair.collision && pair.collision.supports;
-      if (!sup || !sup.length) continue;
-      const pt = sup[0];
-      const strength = Math.hypot(pair.bodyA.velocity.x - pair.bodyB.velocity.x,
-                                  pair.bodyA.velocity.y - pair.bodyB.velocity.y);
+      const A = pair.bodyA, B = pair.bodyB;
+      const fresh = (A.label === 'jelly' && !A.landed) ? A : (B.label === 'jelly' && !B.landed) ? B : null;
+      if (A.label === 'jelly') A.landed = true;
+      if (B.label === 'jelly') B.landed = true;
+      if (!fresh) continue;
+      const strength = Math.hypot(A.velocity.x - B.velocity.x, A.velocity.y - B.velocity.y);
       if (strength < S.minStrength) continue;
-      const hops = {}, queue = [];
-      for (const b of [pair.bodyA, pair.bodyB]) if (b.label === 'jelly') { hops[b.id] = 0; queue.push(b); }
+      const L = fresh === A ? B : A;
+      if (L.label !== 'jelly') continue;
+      const hw = (L.bounds.max.x - L.bounds.min.x) / 2;
+      const off = Math.max(-1, Math.min(1, (fresh.position.x - L.position.x) / hw));
+      const dir = off >= 0 ? 1 : -1, mag = Math.abs(off);
+      if (mag < (S.deadZone || 0)) continue;
+      const hops = { [fresh.id]: 0, [L.id]: 0 }, queue = [L];
       for (let head = 0; head < queue.length; head++) {
-        const cur = queue[head], hop = hops[cur.id];
-        if (hop >= S.maxHops) continue;
-        for (const nb of (graph[cur.id] || [])) {
+        const c = queue[head], hop = hops[c.id];
+        if (hop > S.maxHops) continue;
+        const dv = Math.min(strength * S.scale * mag * Math.pow(S.hopDecay, hop), S.maxDv);
+        if (dv >= 0.05) {
+          Sleeping.set(c, false);
+          Body.setVelocity(c, { x: c.velocity.x + dir * dv, y: c.velocity.y });
+        }
+        for (const nb of (graph[c.id] || [])) {
           if (hops[nb.id] !== undefined) continue;
-          hops[nb.id] = hop + 1; queue.push(nb);
-          if (nb.position.y >= pt.y) continue;
-          const fade = Math.pow(S.hopDecay, hop + 1);
-          const dir = nb.position.x >= pt.x ? 1 : -1;
-          Sleeping.set(nb, false);
-          Body.setVelocity(nb, { x: nb.velocity.x + dir * strength * S.scale * fade, y: nb.velocity.y });
+          hops[nb.id] = hop + 1;
+          queue.push(nb);
         }
       }
     }
@@ -80,9 +88,9 @@ function makeWorld(shakeOn = true, S = C.shake) {
     const b = Bodies.rectangle(x, y, t.w, t.h, {
       chamfer: { radius: Math.min(t.w, t.h) * C.chamferRatio },
       label: 'jelly', friction: C.friction, frictionStatic: C.frictionStatic,
-      frictionAir: C.frictionAir, restitution: C.restitution, density: C.density
+      frictionAir: C.frictionAir, restitution: C.restitution, slop: C.sinkPx, density: C.density
     });
-    Composite.add(engine.world, b); bodies.push(b); return b;
+    Composite.add(engine.world, b); bodies.push(b); if (C.dropSpin) Body.setAngularVelocity(b, C.dropSpin); return b;
   };
   const step = n => { for (let i = 0; i < n; i++) { Engine.update(engine, STEP);
     const lim = C.tiltNoSleepDeg; if (lim) for (const b of bodies) { const d = Math.abs(b.angle * 180 / Math.PI) % 90, t = Math.min(d, 90 - d);

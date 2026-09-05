@@ -167,10 +167,13 @@
           // 何かに接触した時点で「着地した」とみなす。
           // 落下中のゼリーを塔の高さに含めると、落とした瞬間にカメラが飛ぶ。
           // 速度で判定してはいけない（落とした直後は速度0なので即座に着地扱いになる）。
+          // 揺れは「落ちてきたゼリーの最初の接触」でだけ起こす（landed を立てる前に見る）
+          var fresh = (p.bodyA.label === 'jelly' && !p.bodyA.landed) ? p.bodyA :
+                      (p.bodyB.label === 'jelly' && !p.bodyB.landed) ? p.bodyB : null;
           if (p.bodyA.label === 'jelly') p.bodyA.landed = true;
           if (p.bodyB.label === 'jelly') p.bodyB.landed = true;
 
-          self.applyWobble(p, graph);
+          self.applyWobble(p, graph, fresh);
         }
       });
 
@@ -240,6 +243,7 @@
         while (this.accumulator >= FIXED_STEP && steps < MAX_STEPS_PER_FRAME) {
           Engine.update(this.engine, FIXED_STEP);
           this.guardTiltedSleep();
+          Jelly.press(this.engine.pairs.list, this.jellies); // 載っている重さで押し潰す
           Jelly.step(this.jellies); // 変形も物理と同じ固定ステップで進める
           this.accumulator -= FIXED_STEP;
           steps++;
@@ -307,8 +311,16 @@
      * 伝わる先は「接触をたどって繋がっているゼリー」だけ。
      * 距離で判定してはいけない。触れていない離れたゼリーまで動いてしまい、
      * 左端に置いた1つめが、右端に落とした2つめのせいで転げ落ちる。
+     *
+     * 塔を実際に揺らす（速度を与える）のは lander（落ちてきて初めて触れたゼリー）が
+     * ある接触だけ。揺れたゼリー同士の接触で再び揺らすと、揺れが揺れを生んで
+     * 横速度が暴走し、ゼリーが吹っ飛ぶ（実測 1200px/step）。
+     *
+     * @param {object} pair    衝突ペア
+     * @param {object} graph   contactGraph()
+     * @param {object} lander  初めて接触したゼリー。null なら見た目の変形だけ
      */
-    applyWobble: function (pair, graph) {
+    applyWobble: function (pair, graph, lander) {
       var supports = pair.collision && pair.collision.supports;
       if (!supports || !supports.length) return;
 
@@ -332,8 +344,7 @@
         hops[pair.bodyB.id] = 0; queue.push(pair.bodyB);
       }
 
-      // 接触をたどって、1つ離れるごとに弱めながら伝える
-      var shakeOn = S.scale > 0 && strength >= S.minStrength;
+      // 見た目の変形を、接触をたどって1つ離れるごとに弱めながら伝える
       for (var head = 0; head < queue.length; head++) {
         var cur = queue[head];
         var hop = hops[cur.id];
@@ -347,19 +358,37 @@
           if (hops[nb.id] !== undefined) continue;
           hops[nb.id] = hop + 1;
           queue.push(nb);
+          Jelly.impact(nb, point, strength * Math.pow(S.hopDecay, hop + 1) * W.neighborScale);
+        }
+      }
 
-          var fade = Math.pow(S.hopDecay, hop + 1);
-          Jelly.impact(nb, point, strength * fade * W.neighborScale);
+      // 塔を揺らす。lander が受け手(L)の中心からずれて着地した分だけ、
+      // L とその下に連なるゼリーへ横向きの速度を与える。
+      if (!lander || S.scale <= 0 || strength < S.minStrength) return;
+      var L = lander === pair.bodyA ? pair.bodyB : pair.bodyA;
+      if (L.label !== 'jelly') return; // 皿に直接着地。揺らす塔がない
 
-          // 塔を実際に揺らすのは、接触点より上にあるものだけ
-          if (shakeOn && nb.position.y < point.y) {
-            var dir = nb.position.x >= point.x ? 1 : -1;
-            Sleeping.set(nb, false);
-            Body.setVelocity(nb, {
-              x: nb.velocity.x + dir * strength * S.scale * fade,
-              y: nb.velocity.y
-            });
-          }
+      // ずれは lander の中心で測る。接触点で測ると、dropSpin で傾いた lander は角で触れるので
+      // 真ん中に落としても ±1 になってしまう（① 同一サイズ・ブレ0 が 10個で崩れた）。
+      var hw = (L.bounds.max.x - L.bounds.min.x) / 2;
+      var off = Math.max(-1, Math.min(1, (lander.position.x - L.position.x) / hw)); // -1〜1。0 = ど真ん中
+      var dir = off >= 0 ? 1 : -1, mag = Math.abs(off);
+      if (mag < (S.deadZone || 0)) return; // ほぼ真ん中。塔を起こしもしない（眠りが塔を支えている）
+      var sh = {}; sh[lander.id] = 0; sh[L.id] = 0;
+      var sq = [L];
+      for (var k = 0; k < sq.length; k++) {
+        var c = sq[k], h = sh[c.id];
+        if (h > S.maxHops) continue;
+        var dv = Math.min(strength * S.scale * mag * Math.pow(S.hopDecay, h), S.maxDv);
+        if (dv >= 0.05) { // 微小な揺れのために起こすと、かえって塔が緩む
+          Sleeping.set(c, false);
+          Body.setVelocity(c, { x: c.velocity.x + dir * dv, y: c.velocity.y });
+        }
+        var cn = graph[c.id] || [];
+        for (var m = 0; m < cn.length; m++) {
+          if (sh[cn[m].id] !== undefined) continue;
+          sh[cn[m].id] = h + 1;
+          sq.push(cn[m]);
         }
       }
     },
@@ -389,11 +418,15 @@
         frictionStatic: CONFIG.frictionStatic,
         frictionAir: CONFIG.frictionAir, // 着地後の微振動を減衰させる
         restitution: CONFIG.restitution,  // 跳ねさせない。弾みは見た目で作る
+        slop: CONFIG.sinkPx,              // ゼリー同士がこの深さまでめり込む
         density: CONFIG.density,
         label: 'jelly'
       });
       body.jellyType = type;
       Jelly.attach(body); // 変形の状態を持たせる
+
+      // 落下中にゆっくり傾く（参考動画のブロックの落ち方）。向きはランダム
+      if (CONFIG.dropSpin) Body.setAngularVelocity(body, (Math.random() < 0.5 ? -1 : 1) * CONFIG.dropSpin);
 
       Composite.add(this.engine.world, body);
       this.jellies.push(body);
@@ -711,6 +744,19 @@
       var self = this;
       var el = this.canvas;
       var pointing = false;
+
+      // 長押し対策。CSS の user-select / touch-callout で選択モードは止まるが、
+      // Android Chrome は -webkit-touch-callout を見ないので長押しメニューが出る。
+      // ここで既定動作を止める。リンク（プライバシーポリシー）は端末標準の動作を残す。
+      document.addEventListener('contextmenu', function (e) {
+        if (e.target && e.target.closest && e.target.closest('a')) return;
+        e.preventDefault();
+      });
+      // 選択が始まってしまった端末向けの保険。ドラッグ操作が選択に化けるのを防ぐ
+      document.addEventListener('selectstart', function (e) {
+        if (e.target && e.target.closest && e.target.closest('a')) return;
+        e.preventDefault();
+      });
 
       function toWorldX(clientX) {
         var rect = el.getBoundingClientRect();

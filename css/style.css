@@ -37,6 +37,19 @@ body {
   /* ゲームなので慣性スクロール自体を無効化。スクロールUIを持つ場合は外す */
   overflow: hidden;
   touch-action: manipulation; /* ダブルタップズーム抑止 */
+
+  /* ------------------------------------------------------------
+     長押し対策（スマホ実機で必須）
+     LINEアプリ内ブラウザは長押しでテキスト選択モードに入り、
+     画面全体が青くハイライトされて操作ができなくなる。
+     ゲームなので文字を選ばせる必要がないので、ページ全体で切る。
+     プライバシーポリシーは privacy.html 側にインラインCSSを持つ独立ページなので、
+     ここで切っても本文は選択・コピーできる。
+     ------------------------------------------------------------ */
+  -webkit-user-select: none; /* iOS Safari / LINEアプリ内ブラウザ */
+  user-select: none;
+  -webkit-touch-callout: none; /* 長押しの「コピー」「画像を保存」メニュー(iOS) */
+  -webkit-tap-highlight-color: transparent; /* タップ時に出る灰色のちらつき */
 }
 
 /* ------------------------------------------------------------
@@ -270,6 +283,11 @@ body {
   height: 100%;
   object-fit: cover;
   object-position: center top;
+  /* Android Chrome は -webkit-touch-callout を見ないので、
+     画像そのものをタップ対象から外して長押しメニューを封じる。
+     装飾なので操作を受け取る必要がない。 */
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 
 /* ボタンの下に敷く暗幕。キービジュアルの上でも文字が沈まないようにする */
