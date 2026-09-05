@@ -49,23 +49,31 @@
   ];
 
   function resolveEnvironment() {
-    // ① ビルド時に注入された値を最優先（Vite なら import.meta.env、
+    // ① エンドポイントURLの ?env= を最優先。
+    //    3環境を同じ配信先に置く場合、これが唯一の確実な判別手段。
+    //    コンソールの各エンドポイントURLに付けておく:
+    //      開発用 .../?env=development
+    //      審査用 .../?env=review
+    //      本番用 .../?env=production
+    //    エンドポイントURLのクエリパラメータはLIFFのリダイレクト後も保持される。
+    var m = /[?&]env=(development|review|production)\b/.exec(location.search);
+    if (m) return m[1];
+
+    // ② ビルド時に注入された値（Vite なら import.meta.env、
     //    静的ホスティングなら index.html にインラインで window.__ENV__ を書く）
     if (window.__ENV__ && LIFF_IDS[window.__ENV__]) return window.__ENV__;
 
-    // ② パスで判定
+    // ③ パスで判定
     for (var i = 0; i < ENV_BY_PATH.length; i++) {
       if (ENV_BY_PATH[i][0].test(location.pathname)) return ENV_BY_PATH[i][1];
     }
 
-    // ③ ホスト名で判定
+    // ④ ホスト名で判定
     if (ENV_BY_HOST[location.hostname]) return ENV_BY_HOST[location.hostname];
 
-    // ④ GitHub Pages は動作確認用とみなす。
-    //    本番を Pages で運用する場合はこのブロックを消すこと。
-    if (/\.github\.io$/.test(location.hostname)) return 'development';
-
-    // ⑤ 該当なしは本番扱い（誤って開発用IDで公開されるより安全）
+    // ⑤ 該当なしは本番扱い。
+    //    ここを「開発用」に倒してはいけない。開発用チャネルは「開発中」ステータスなので、
+    //    開発者ロールを持たない一般ユーザーは起動できなくなる。
     return 'production';
   }
 
@@ -91,6 +99,13 @@
     environment: environment,
     standalone: resolveStandalone(),
     liffId: resolveLiffId(),
+
+    /**
+     * 外部に配る用のリンク。シェアメッセージなどに使う。
+     * 配信先URLではなく本番用のLIFF URLを渡すこと。
+     * 配信先URLを直接開くとLIFFとして起動せず、機能が揃わない。
+     */
+    permanentLink: 'https://miniapp.line.me/' + LIFF_IDS.production,
 
     /**
      * 初期スコープは openid のみに絞る。

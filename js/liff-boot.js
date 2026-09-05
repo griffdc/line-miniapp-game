@@ -130,8 +130,9 @@
               action: {
                 type: 'uri',
                 label: 'あそんでみる',
-                // TODO: パーマネントリンク（https://miniapp.line.me/{liffId}）に置き換える
-                uri: location.origin + '/'
+                // パーマネントリンク。配信先URLではなくLIFF URLを渡す。
+                // 配信先URLを直接開くとLIFFとして起動せず、機能が揃わない。
+                uri: config.permanentLink
               }
             }
           ]
