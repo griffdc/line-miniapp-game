@@ -69,11 +69,24 @@
   }
 
   /**
+   * ログインが必要になった時点で初めて呼ぶ。
+   * 未ログインなら LINE の認証画面へ遷移する（そのまま戻ってこない）。
+   * ログイン不要で遊べる部分を先に見せてから呼ぶこと。
+   * @returns {boolean} すでにログイン済みなら true
+   */
+  function ensureLogin() {
+    if (env.isLoggedIn) return true;
+    liff.login({ redirectUri: location.href });
+    return false;
+  }
+
+  /**
    * 表示名などが必要になった時点で呼ぶ。起動時には呼ばない。
    * @returns {Promise<object|null>}
    */
   function requestProfile() {
-    if (!liff.permission || !env.isLoggedIn) return Promise.resolve(null);
+    if (!liff.permission) return Promise.resolve(null);
+    if (!ensureLogin()) return Promise.resolve(null);
 
     return liff.permission.query('profile').then(function (status) {
       if (status.state === 'granted') return liff.getProfile();
@@ -181,7 +194,12 @@
   }
 
   // 外から使えるように公開しておく（プロフィールは必要になった画面で取得する）
-  window.AppSession = { env: env, requestProfile: requestProfile, shareResult: shareResult };
+  window.AppSession = {
+    env: env,
+    ensureLogin: ensureLogin,
+    requestProfile: requestProfile,
+    shareResult: shareResult
+  };
 
   boot();
 })();
