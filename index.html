@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover: ノッチ端末でセーフエリアを env() から取得するために必須 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="format-detection" content="telephone=no,address=no,email=no">
+<meta name="robots" content="noindex">
+<title>Mini App Game</title>
+
+<link rel="stylesheet" href="./css/style.css">
+
+<!--
+  スクリプトはすべて defer。defer は記述順に実行されるので
+  sdk.js → config → ads → game → boot の順で依存が解決される。
+  同期 <script> を head に置くと Lighthouse の render-blocking で減点される。
+-->
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js" defer></script>
+<script src="./js/config.js" defer></script>
+<script src="./js/ads.js" defer></script>
+<script src="./js/game.js" defer></script>
+<script src="./js/liff-boot.js" defer></script>
+</head>
+<body>
+
+<!-- ============================================================
+     起動オーバーレイ
+     LINEミニアプリの「読み込み中アイコン」レギュレーションに従い、
+     自前のスピナーを出す場合はガイドラインの指定に合わせること。
+     https://developers.line.biz/ja/docs/line-mini-app/design/loading-icon/
+     ============================================================ -->
+<div id="boot" class="overlay" role="status" aria-live="polite">
+  <div class="spinner" aria-hidden="true"></div>
+  <p class="overlay__text">読み込み中…</p>
+</div>
+
+<!-- 起動失敗時（liff.init 失敗、ネットワーク断など） -->
+<div id="error" class="overlay overlay--hidden" role="alert">
+  <p class="overlay__text" id="error-message">読み込みに失敗しました。</p>
+  <button type="button" class="btn" id="error-retry">再読み込み</button>
+</div>
+
+<!-- LINEアプリ外（外部ブラウザ）で機能制限がある場合の案内 -->
+<div id="notice-external" class="notice notice--hidden" role="note">
+  一部の機能はLINEアプリ内でのみ利用できます。
+  <button type="button" class="notice__close" aria-label="閉じる">×</button>
+</div>
+
+<main id="app" class="app" hidden>
+
+  <!-- ゲーム描画領域。広告枠とは絶対に重ねない（誤タップ＝ポリシー違反リスク） -->
+  <section id="game-root" class="game">
+    <canvas id="game-canvas" class="game__canvas"></canvas>
+
+    <!-- ゲームのUI（スコア等）はキャンバス上のレイヤーとして重ねる -->
+    <div class="game__hud">
+      <span id="hud-score" class="hud__score">0</span>
+    </div>
+  </section>
+
+  <!-- 常時表示バナー枠。
+       高さを CSS で先に予約しておくことで、広告差し込み時の CLS を防ぐ。 -->
+  <aside id="ad-banner" class="ad ad--banner" aria-label="広告">
+    <div class="ad__slot" data-ad-slot="banner"></div>
+  </aside>
+
+  <!-- 下部固定のアクション。シェアはLINEアプリ内でのみ表示する -->
+  <nav class="actions">
+    <button type="button" class="btn btn--ghost" id="btn-share" hidden>結果をシェア</button>
+    <button type="button" class="btn" id="btn-start">スタート</button>
+  </nav>
+
+</main>
+
+<!-- ============================================================
+     ラウンド間に差し込む広告（インタースティシャル相当）
+     - 必ず閉じられること（ユーザーを閉じ込めない）
+     - ゲーム操作をブロックする時間を必要以上に長くしない
+     ============================================================ -->
+<div id="ad-interstitial" class="overlay overlay--hidden overlay--ad">
+  <div class="ad ad--interstitial">
+    <div class="ad__slot" data-ad-slot="interstitial"></div>
+  </div>
+  <button type="button" class="btn btn--ghost" id="ad-interstitial-close">閉じる</button>
+</div>
+
+</body>
+</html>

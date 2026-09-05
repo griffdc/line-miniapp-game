@@ -1,0 +1,231 @@
+/* ============================================================
+   LINEミニアプリ ゲームテンプレート スタイル
+   外部フォント・外部CSSは読み込まない（描画ブロック回避）
+   ============================================================ */
+
+:root {
+  /* ランドスケープ時のセーフエリア実測値（LINE公式ドキュメント準拠）
+     env() 非対応環境のフォールバックとして使う */
+  --safe-landscape-x: 44px;
+  --safe-landscape-bottom: 21px;
+
+  /* バナー枠の予約高さ。発行された広告タグの実サイズに合わせて調整する */
+  --ad-banner-height: 60px;
+
+  --bg: #10131a;
+  --surface: #1b2029;
+  --text: #f2f4f8;
+  --text-dim: #98a2b3;
+  --accent: #06c755; /* LINE Green */
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overscroll-behavior: none; /* ゲーム中の引っ張り更新・バウンスを止める */
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  /* ゲームなので慣性スクロール自体を無効化。スクロールUIを持つ場合は外す */
+  overflow: hidden;
+  touch-action: manipulation; /* ダブルタップズーム抑止 */
+}
+
+/* ------------------------------------------------------------
+   レイアウト + セーフエリア
+   縦向き: env() のインセットに従う
+   横向き: ノッチ端末向けに 44px / 21px を最低値として確保する
+   ------------------------------------------------------------ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+@media (orientation: landscape) {
+  .app {
+    padding-right: max(env(safe-area-inset-right, 0px), var(--safe-landscape-x));
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--safe-landscape-bottom));
+    padding-left: max(env(safe-area-inset-left, 0px), var(--safe-landscape-x));
+  }
+}
+
+/* ------------------------------------------------------------
+   ゲーム領域
+   ------------------------------------------------------------ */
+.game {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0; /* flex 子要素がはみ出さないように */
+}
+
+.game__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none; /* ドラッグ操作をゲーム側で扱う */
+}
+
+.game__hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* HUDはタップを透過。ボタンを置く場合は個別に auto を戻す */
+  padding: 12px 16px;
+}
+
+.hud__score {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   広告枠
+   高さを先に確保して CLS を出さない。
+   広告が返らなかった場合も枠が潰れないようにする。
+   ------------------------------------------------------------ */
+.ad {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.ad--banner {
+  height: var(--ad-banner-height);
+  min-height: var(--ad-banner-height);
+}
+
+.ad--interstitial {
+  width: min(100%, 336px);
+  min-height: 280px;
+  border-radius: var(--radius);
+}
+
+.ad__slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* 広告が読み込めなかった枠は視覚的に主張させない */
+.ad__slot[data-ad-state="failed"],
+.ad__slot[data-ad-state="blocked"] { opacity: 0; }
+
+/* ------------------------------------------------------------
+   アクション
+   ------------------------------------------------------------ */
+.actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 12px 16px;
+}
+
+.btn {
+  flex: 1;
+  min-height: 48px; /* タップターゲット確保 */
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn:disabled { opacity: .5; cursor: default; }
+
+.btn--ghost {
+  background: transparent;
+  border: 1px solid var(--text-dim);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------
+   オーバーレイ
+   ------------------------------------------------------------ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.overlay--ad { background: rgba(0, 0, 0, .8); }
+.overlay--hidden { display: none; }
+
+.overlay__text {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  text-align: center;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, .15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
+}
+
+/* ------------------------------------------------------------
+   通知バー
+   ------------------------------------------------------------ */
+.notice {
+  position: fixed;
+  z-index: 20;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notice--hidden { display: none; }
+
+.notice__close {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
