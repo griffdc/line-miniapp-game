@@ -12,7 +12,6 @@
     error: document.getElementById('error'),
     errorMessage: document.getElementById('error-message'),
     errorRetry: document.getElementById('error-retry'),
-    noticeExternal: document.getElementById('notice-external'),
     app: document.getElementById('app'),
     btnStart: document.getElementById('btn-start'),
     btnShare: document.getElementById('btn-share')
@@ -148,18 +147,10 @@
       window.Game.start();
     });
 
+    // シェアボタンの表示は結果画面側で制御する。ここでは動作だけ結びつける。
     if (env.canShare) {
-      els.btnShare.hidden = false;
       els.btnShare.addEventListener('click', function () {
         shareResult(window.Game.score);
-      });
-    }
-
-    // LINEアプリ外では使えない機能があることを一度だけ知らせる
-    if (!env.isInClient) {
-      els.noticeExternal.classList.remove('notice--hidden');
-      els.noticeExternal.querySelector('.notice__close').addEventListener('click', function () {
-        els.noticeExternal.classList.add('notice--hidden');
       });
     }
 
@@ -168,7 +159,31 @@
     });
   }
 
+  /** LIFF を通さずにゲームだけ起動する。ローカルプレビュー用。 */
+  function bootStandalone(reason) {
+    env.isInClient = false;
+    env.isLoggedIn = false;
+    env.os = 'web';
+
+    els.boot.classList.add('overlay--hidden');
+    els.app.hidden = false;
+
+    bindUi();
+    window.Ads.init();
+    window.Game.init({ userId: null, isInClient: false });
+
+    if (window.console) console.info('[standalone] LIFFを使わずに起動しました:', reason);
+  }
+
   function boot() {
+    // ローカルプレビューでは liff.init が通らない（チャネルのエンドポイントURLと
+    // 一致しないため）。localhost と file:// は LIFF を通さずに起動する。
+    // 明示的に確認したいときは ?standalone=1 を付ける。
+    if (config.standalone) {
+      bootStandalone(location.protocol === 'file:' ? 'file://' : location.hostname);
+      return;
+    }
+
     if (!config.liffId) {
       showError('LIFF ID が設定されていません。js/config.js を確認してください。');
       return;
