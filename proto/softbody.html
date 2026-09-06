@@ -57,6 +57,7 @@
   <button type="button" id="reset">やり直す</button>
   <button type="button" id="auto">20個おとす</button>
   <button type="button" id="lite">軽量に切替</button>
+  <button type="button" id="idle">空回しテスト</button>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
@@ -88,6 +89,9 @@
    *   このゲームの肝が消える。速度はサブステップと点の数で稼ぐこと。
    */
   var FREEZE = num('freeze', 0);
+  // 解像度の上限。iPhone の devicePixelRatio は 3 だが 2 で頭打ちにしている。
+  // 画素数は面積で効くので 2 → 1.5 で 44% 減る。?dpr=1.5 で試せる。
+  var DPR_CAP = num('dpr', 2);
   var RIGID = q.get('rigid') === '1';
   var OPTS = {
     points: Math.round(num('points', 12)), // 16→12 で 1フレーム 2.89ms→2.02ms
@@ -110,8 +114,10 @@
   var dropX = 0, ready = true, lastDrop = 0;
   var fps = 0, frames = 0, fpsAt = 0, stepMs = 0, drawMs = 0;
 
+  function dprOf() { return Math.min(window.devicePixelRatio || 1, DPR_CAP); }
+
   function measure() {
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var dpr = dprOf();
     var r = canvas.getBoundingClientRect();
     viewW = r.width; viewH = r.height;
     canvas.width = Math.round(r.width * dpr);
@@ -222,7 +228,8 @@
 
   function draw() {
     var t0 = performance.now();
-    ctx.setTransform(Math.min(window.devicePixelRatio || 1, 2), 0, 0, Math.min(window.devicePixelRatio || 1, 2), 0, 0);
+    var d = dprOf();
+    ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.fillStyle = C.background.skyColor;
     ctx.fillRect(0, 0, viewW, viewH);
 
@@ -265,8 +272,40 @@
     drawMs = performance.now() - t0;
   }
 
+  /**
+   * 空回しテスト。物理も描画も一切せず、requestAnimationFrame の間隔だけを測る。
+   *
+   * これで 60fps 出るなら、遅いのはこのページの処理。
+   * これでも 30fps なら端末かブラウザ側の上限で、
+   * コードをいくら軽くしても 60fps にはならない（低電力モードなど）。
+   */
+  var idle = null;
+  function startIdleTest() {
+    idle = { stamps: [] };
+    hud.textContent = '空回し計測中…\n画面に触らないでください';
+  }
+  function idleTick(now) {
+    idle.stamps.push(now);
+    if (idle.stamps.length < 90) return;
+    var gaps = [];
+    for (var i = 1; i < idle.stamps.length; i++) gaps.push(idle.stamps[i] - idle.stamps[i - 1]);
+    gaps.sort(function (a, b) { return a - b; });
+    var med = gaps[gaps.length >> 1];
+    idle = null;
+    hud.textContent =
+      '空回しテスト（物理も描画もなし）\n' +
+      'フレーム間隔 ' + med.toFixed(1) + 'ms\n' +
+      '＝ ' + Math.round(1000 / med) + 'fps\n\n' +
+      (med < 20
+        ? 'この端末は60fpsを出せます。\n遅いのはこのページの処理です。'
+        : '端末かブラウザ側が30fpsに\n制限しています。\nコードを軽くしても上がりません。\n低電力モードを確認してください。') +
+      '\n\n「やり直す」で戻ります';
+  }
+
   function loop(now) {
     requestAnimationFrame(loop);
+
+    if (idle) { idleTick(now); return; }
 
     var t0 = performance.now();
     var dt = (1000 / 60) / SUB;
@@ -319,6 +358,7 @@
       '高さ       ' + Math.round(Math.abs(towerTop()) / C.pxPerCm) + 'cm\n' +
       '壁         ' + (WALL / C.pxPerCm) + 'cm\n' +
       '固定済み    ' + frozen + ' / ' + jellies.length + '\n' +
+      '解像度      ' + Math.round(viewW * dprOf()) + 'x' + Math.round(viewH * dprOf()) + ' dpr' + dprOf() + '\n' +
       (RIGID ? '' : 'spoke ' + OPTS.spoke + ' / cross ' + OPTS.cross);
   }
 
@@ -334,7 +374,8 @@
   canvas.addEventListener('pointerup', function () { drop(dropX); });
   document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-  document.getElementById('reset').addEventListener('click', function () { build(); });
+  document.getElementById('reset').addEventListener('click', function () { idle = null; build(); });
+  document.getElementById('idle').addEventListener('click', startIdleTest);
   // 実機が重いときの逃げ道。URLを打ち込まずに切り替えられるようにしておく
   document.getElementById('lite').addEventListener('click', function () {
     var lite = OPTS.points <= 10 && SUB <= 2;
