@@ -175,6 +175,79 @@
     return { ground: ground, walls: walls, all: [ground].concat(walls) };
   }
 
+  /**
+   * ゼリー同士をくっつける。
+   *
+   * 柔らかい物体は互いの上に留まらず、滑って床から埋まっていく。
+   * だから壁で囲っても「溜まる」だけで「積み上がる」にはならない
+   * （実測: 10個で 13cm。剛体なら 50cm）。
+   * 本物のゼリーは互いに貼りつくので、接触したところを弱い拘束でつなぐ。
+   *
+   * 実測（壁8cm・ブレ12px・2シード平均）:
+   *   くっつき 0     : 10個 13.4cm / 20個 18.6cm / 落ちた数 12.5
+   *   くっつき 0.05  : 10個 24.8cm / 20個 31.4cm / 落ちた数  4.5  ← 採用
+   *   くっつき 0.1   : 10個 21.9cm / 20個 33.7cm / 落ちた数  0    強すぎて失敗しなくなる
+   *
+   * 伸びすぎた拘束は切る。これが「支えきれずに崩れる」になる。
+   *
+   * @param {object} engine
+   * @param {{stick:number, maxLinks:number, breakRatio:number}} opt
+   */
+  function sticky(engine, opt) {
+    var P = Object.assign({ stick: 0.05, maxLinks: 4, breakRatio: 1.6 }, opt || {});
+    var links = [];
+
+    function keyOf(a, b) { return a.group < b.group ? a.group + ':' + b.group : b.group + ':' + a.group; }
+
+    M.Events.on(engine, 'collisionStart', function (ev) {
+      if (!P.stick) return;
+      for (var i = 0; i < ev.pairs.length; i++) {
+        var A = ev.pairs[i].bodyA, B = ev.pairs[i].bodyB;
+        if (!A.jelly || !B.jelly || A.jelly === B.jelly) continue;
+        var ja = A.jelly, jb = B.jelly, key = keyOf(ja, jb);
+        ja._links = ja._links || {}; jb._links = jb._links || {};
+        var n = ja._links[key] || 0;
+        if (n >= P.maxLinks) continue;           // 1組につき数本まで。全点をつなぐと固まる
+        ja._links[key] = jb._links[key] = n + 1;
+
+        var dx = B.position.x - A.position.x, dy = B.position.y - A.position.y;
+        var len = Math.sqrt(dx * dx + dy * dy) || 1;
+        var con = M.Constraint.create({ bodyA: A, bodyB: B, length: len, stiffness: P.stick, damping: 0.2 });
+        con._rest = len; con._key = key;
+        M.Composite.add(engine.world, con);
+        links.push(con);
+      }
+    });
+
+    return {
+      /** 伸びすぎた拘束を切る。毎フレームでなくてよい */
+      update: function () {
+        for (var i = links.length - 1; i >= 0; i--) {
+          var c = links[i];
+          var dx = c.bodyB.position.x - c.bodyA.position.x;
+          var dy = c.bodyB.position.y - c.bodyA.position.y;
+          if (Math.sqrt(dx * dx + dy * dy) > c._rest * P.breakRatio) drop(i);
+        }
+      },
+      /** ゼリーを消すときに、そのゼリーに繋がる拘束も消す */
+      removeFor: function (jelly) {
+        for (var i = links.length - 1; i >= 0; i--) {
+          if (links[i].bodyA.jelly === jelly || links[i].bodyB.jelly === jelly) drop(i);
+        }
+      },
+      count: function () { return links.length; }
+    };
+
+    function drop(i) {
+      var c = links[i];
+      M.Composite.remove(engine.world, c);
+      links.splice(i, 1);
+      var ja = c.bodyA.jelly, jb = c.bodyB.jelly;
+      if (ja && ja._links && ja._links[c._key]) ja._links[c._key]--;
+      if (jb && jb._links && jb._links[c._key]) jb._links[c._key]--;
+    }
+  }
+
   /** ワールドに追加する */
   function add(world, jelly) {
     M.Composite.add(world, jelly.parts.concat(jelly.constraints));
@@ -224,6 +297,7 @@
     DEFAULTS: DEFAULTS,
     setMatter: function (m) { M = m; },
     arena: arena,
+    sticky: sticky,
     create: create,
     add: add,
     outline: outline,

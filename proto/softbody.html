@@ -16,6 +16,7 @@
     ?sub=3        サブステップ。小さいと軽いが、ゼリーが止まらなくなる（2未満は不可）
     ?points=12    輪郭の点の数。減らすと軽いが形が粗くなる
     ?freeze=200   埋もれたゼリーを固定して軽くする。速いがゲーム性が消えるので既定は0
+    ?stick=0.05   ゼリー同士のくっつき。0 で無効（塔にならず溜まるだけになる）
     ?rigid=1      比較用に剛体（今の本番と同じ角丸長方形）で積む
 
   壁がなぜ要るか:
@@ -92,6 +93,9 @@
   // 解像度の上限。iPhone の devicePixelRatio は 3 だが 2 で頭打ちにしている。
   // 画素数は面積で効くので 2 → 1.5 で 44% 減る。?dpr=1.5 で試せる。
   var DPR_CAP = num('dpr', 2);
+  // ゼリー同士のくっつき。柔らかい物体は互いの上に留まらないので、
+  // これが無いと塔にならず床から溜まっていく（実測: 10個で13cm、有りで25cm）。
+  var STICK = num('stick', 0.05);
   var RIGID = q.get('rigid') === '1';
   var OPTS = {
     points: Math.round(num('points', 12)), // 16→12 で 1フレーム 2.89ms→2.02ms
@@ -109,10 +113,18 @@
 
   var canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
   var hud = document.getElementById('hud');
-  var viewW = 0, viewH = 0, engine = null, jellies = [], ground = null, arena = null;
+  var viewW = 0, viewH = 0, engine = null, jellies = [], ground = null, arena = null, glue = null;
   var camera = { y: 0, base: 0 };
   var dropX = 0, ready = true, lastDrop = 0;
   var fps = 0, frames = 0, fpsAt = 0, stepMs = 0, drawMs = 0;
+
+  // 物理は実時間に合わせて進める。
+  // ★ 画面が30fpsの端末では、1フレームにつき1回だけ 1/60秒 進めると
+  //   実時間の半分しか進まず、ゲーム全体がスローモーションになる。
+  //   経過時間を貯めて、必要な回数だけ固定ステップを回す。
+  var FIXED = 1000 / 60;
+  var MAX_FRAMES = 3;        // 詰まったときに雪だるま式に増えるのを防ぐ
+  var accumulator = 0, lastTime = 0, stepsThisFrame = 0;
 
   function dprOf() { return Math.min(window.devicePixelRatio || 1, DPR_CAP); }
 
@@ -139,6 +151,7 @@
     arena = S.arena(w, WALL, 10);
     ground = arena.ground;
     Composite.add(engine.world, arena.all);
+    glue = (!RIGID && STICK > 0) ? S.sticky(engine, { stick: STICK }) : null;
     camera.y = camera.base;
   }
 
@@ -305,16 +318,28 @@
   function loop(now) {
     requestAnimationFrame(loop);
 
-    if (idle) { idleTick(now); return; }
+    if (idle) { idleTick(now); lastTime = now; accumulator = 0; return; }
+
+    if (!lastTime) lastTime = now;
+    accumulator += Math.min(now - lastTime, FIXED * MAX_FRAMES);
+    lastTime = now;
 
     var t0 = performance.now();
-    var dt = (1000 / 60) / SUB;
-    for (var s = 0; s < SUB; s++) Engine.update(engine, dt);
+    var dt = FIXED / SUB;
+    stepsThisFrame = 0;
+    while (accumulator >= FIXED && stepsThisFrame < MAX_FRAMES) {
+      for (var s = 0; s < SUB; s++) Engine.update(engine, dt);
+      accumulator -= FIXED;
+      stepsThisFrame++;
+    }
     stepMs = performance.now() - t0;
 
     // カメラ
     var target = Math.min(camera.base, towerTop() - viewH * C.cameraHeadroom);
     camera.y += (target - camera.y) * C.cameraLerp;
+
+    // 伸びすぎたくっつきを切る。これが「支えきれずに崩れる」になる
+    if (glue) glue.update();
 
     // 山の底に埋もれたゼリーを静止物に変える（描画は続ける）
     if (FREEZE > 0 && !RIGID) {
@@ -333,8 +358,12 @@
     for (var i = jellies.length - 1; i >= 0; i--) {
       var c = RIGID ? jellies[i].position : S.centroid(jellies[i]);
       if (c.y > C.fallLimitY) {
-        if (RIGID) Composite.remove(engine.world, jellies[i]);
-        else Composite.remove(engine.world, jellies[i].parts.concat(jellies[i].constraints));
+        if (RIGID) {
+          Composite.remove(engine.world, jellies[i]);
+        } else {
+          if (glue) glue.removeFor(jellies[i]); // 先に繋がりを外す。残すと消えた body を参照し続ける
+          Composite.remove(engine.world, jellies[i].parts.concat(jellies[i].constraints));
+        }
         jellies.splice(i, 1);
       }
     }
@@ -353,11 +382,12 @@
       'ゼリー      ' + jellies.length + '\n' +
       'ボディ      ' + bodies + '\n' +
       'サブステップ ' + SUB + '\n' +
-      '物理       ' + stepMs.toFixed(2) + 'ms  (16.6が上限)\n' +
+      '物理       ' + stepMs.toFixed(2) + 'ms  (' + Math.round(1000 / Math.max(fps, 1)) + 'msが上限)\n' +
+      '物理の歩数  ' + stepsThisFrame + ' /フレーム (30fpsなら2)\n' +
       '描画       ' + drawMs.toFixed(2) + 'ms\n' +
       '高さ       ' + Math.round(Math.abs(towerTop()) / C.pxPerCm) + 'cm\n' +
       '壁         ' + (WALL / C.pxPerCm) + 'cm\n' +
-      '固定済み    ' + frozen + ' / ' + jellies.length + '\n' +
+      'くっつき    ' + (glue ? glue.count() + '本 (強さ ' + STICK + ')' : 'なし') + '\n' +
       '解像度      ' + Math.round(viewW * dprOf()) + 'x' + Math.round(viewH * dprOf()) + ' dpr' + dprOf() + '\n' +
       (RIGID ? '' : 'spoke ' + OPTS.spoke + ' / cross ' + OPTS.cross);
   }
@@ -374,7 +404,9 @@
   canvas.addEventListener('pointerup', function () { drop(dropX); });
   document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-  document.getElementById('reset').addEventListener('click', function () { idle = null; build(); });
+  document.getElementById('reset').addEventListener('click', function () {
+    idle = null; accumulator = 0; lastTime = 0; build();
+  });
   document.getElementById('idle').addEventListener('click', startIdleTest);
   // 実機が重いときの逃げ道。URLを打ち込まずに切り替えられるようにしておく
   document.getElementById('lite').addEventListener('click', function () {
@@ -393,7 +425,7 @@
   requestAnimationFrame(loop);
 
   // ヘッドレス検証から叩けるようにする
-  window.PROTO = { drop: drop, draw: draw, jellies: function () { return jellies; }, top: towerTop, engine: function () { return engine; } };
+  window.PROTO = { drop: drop, draw: draw, glue: function () { return glue; }, jellies: function () { return jellies; }, top: towerTop, engine: function () { return engine; } };
 })();
 </script>
 </body>
