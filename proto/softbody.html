@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="robots" content="noindex">
+<title>ソフトボディ試作 | ぷるぷるゼリータワー</title>
+<!--
+  本体には一切影響しない試作ページ。
+  目的は「実機で 60fps 出るか」「積めるか」「ぷるぷるして見えるか」の3点だけ。
+
+  URLパラメータで手触りを変えられる（実機で試せるように）:
+    ?wall=80      土台両端の壁の高さ(px)。10px = 1cm。0 で壁なし
+    ?spoke=0.35   中心へのバネ。小さいほど柔らかく潰れる
+    ?cross=0.15   差し渡し。小さいほど平たく潰れる
+    ?sub=4        サブステップ。小さいと軽いが、ゼリーが止まらなくなる（4未満は不可）
+    ?points=16    輪郭の点の数。減らすと軽いが形が粗くなる
+    ?rigid=1      比較用に剛体（今の本番と同じ角丸長方形）で積む
+
+  壁がなぜ要るか:
+    柔らかいゼリーは潰れて横へ広がるので、壁が無いと塔にならず山になる。
+    実測では壁なしだと20個積んでも高さは12cmで頭打ち。
+    8cmの壁を入れると26cmまで伸び、そこから先は押し出されて落ち始める。
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #41b6fe; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  #c { display: block; width: 100%; height: 100%; touch-action: none; }
+  #hud {
+    position: fixed; left: 8px; top: 8px; margin: 0; padding: 8px 10px;
+    border-radius: 6px; background: rgba(0,0,0,.55); color: #7dffcf;
+    font-size: 11px; line-height: 1.6; white-space: pre; pointer-events: none;
+  }
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; gap: 8px; padding: 10px calc(10px + env(safe-area-inset-left, 0px))
+      calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  button {
+    flex: 1; min-height: 44px; border: 0; border-radius: 8px;
+    background: rgba(255,255,255,.9); color: #10131a; font-size: 14px; font-weight: 700;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<pre id="hud">読み込み中…</pre>
+<div id="bar">
+  <button type="button" id="reset">やり直す</button>
+  <button type="button" id="auto">真ん中に20個</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+<script src="../js/config.js"></script>
+<script src="./softbody.js"></script>
+<script>
+(function () {
+  'use strict';
+  var C = window.APP_CONFIG.game;
+  var S = window.SoftJelly;
+  S.setMatter(window.Matter);
+
+  var Engine = Matter.Engine, Composite = Matter.Composite, Bodies = Matter.Bodies;
+
+  var q = new URLSearchParams(location.search);
+  var num = function (k, d) { var v = parseFloat(q.get(k)); return isFinite(v) ? v : d; };
+
+  // サブステップ。1のままだと拘束が収束せず、ゼリーは着地後も止まらず横へ流れる（実測）。
+  // 4 で 1フレーム 2.8ms、8 で 5.3ms。見た目の差は小さいので既定は 4。
+  var SUB = Math.max(1, Math.round(num('sub', 4)));
+  var WALL = num('wall', 80);        // 壁の高さ(px)
+  var RIGID = q.get('rigid') === '1';
+  var OPTS = {
+    points: Math.round(num('points', 16)),
+    radius: num('radius', 7),
+    squareness: num('squareness', 6),
+    edge: num('edge', 0.9),
+    bend: num('bend', 0.4),
+    spoke: num('spoke', 0.35),
+    cross: num('cross', 0.15),
+    centerMass: num('centerMass', 0.5),
+    damping: num('damping', 0.1),
+    friction: C.friction, frictionStatic: C.frictionStatic,
+    frictionAir: C.frictionAir, restitution: 0
+  };
+
+  var canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  var hud = document.getElementById('hud');
+  var viewW = 0, viewH = 0, engine = null, jellies = [], ground = null, arena = null;
+  var camera = { y: 0, base: 0 };
+  var dropX = 0, ready = true, lastDrop = 0;
+  var fps = 0, frames = 0, fpsAt = 0, stepMs = 0, drawMs = 0;
+
+  function measure() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var r = canvas.getBoundingClientRect();
+    viewW = r.width; viewH = r.height;
+    canvas.width = Math.round(r.width * dpr);
+    canvas.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    camera.base = C.groundScreenMargin - viewH;
+    camera.y = camera.base;
+  }
+
+  function build() {
+    engine = Engine.create({ enableSleeping: true });
+    engine.positionIterations = 10;
+    engine.velocityIterations = 8;
+    engine.constraintIterations = 6;
+    engine.gravity.y = C.gravity;
+    jellies = [];
+    var w = viewW * C.background.plateWidth;
+    arena = S.arena(w, WALL, 10);
+    ground = arena.ground;
+    Composite.add(engine.world, arena.all);
+    camera.y = camera.base;
+  }
+
+  var typeIndex = 0;
+  function nextType() { return C.jellyTypes[(typeIndex++) % C.jellyTypes.length]; }
+
+  function towerTop() {
+    var top = 0;
+    for (var i = 0; i < jellies.length; i++) {
+      var b = RIGID ? jellies[i].bounds : S.bounds(jellies[i]);
+      var y = RIGID ? b.min.y : b.minY;
+      if (y < top) top = y;
+    }
+    return top;
+  }
+
+  function drop(x, force) {
+    var now = performance.now();
+    if (!force && now - lastDrop < 250) return; // force はヘッドレス検証から使う
+    lastDrop = now;
+    var t = nextType();
+    var y = camera.y + C.dropperScreenY;
+    if (RIGID) {
+      var b = Bodies.rectangle(x, y, t.w, t.h, {
+        chamfer: { radius: Math.min(t.w, t.h) * C.chamferRatio },
+        friction: C.friction, frictionStatic: C.frictionStatic, frictionAir: C.frictionAir,
+        restitution: C.restitution, slop: C.sinkPx, density: C.density, label: 'jelly'
+      });
+      b.jellyType = t;
+      Composite.add(engine.world, b);
+      jellies.push(b);
+    } else {
+      var j = S.create(x, y, t, OPTS, t.w * t.h * C.density);
+      S.add(engine.world, j);
+      jellies.push(j);
+    }
+  }
+
+  // ---- 描画 -------------------------------------------------------------
+  function hexToRgb(hex) {
+    var n = parseInt(hex.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function tracePath(pts) {
+    var n = pts.length;
+    ctx.beginPath();
+    ctx.moveTo((pts[n - 1].x + pts[0].x) / 2, (pts[n - 1].y + pts[0].y) / 2);
+    for (var i = 0; i < n; i++) {
+      var k = (i + 1) % n;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, (pts[i].x + pts[k].x) / 2, (pts[i].y + pts[k].y) / 2);
+    }
+    ctx.closePath();
+  }
+  function drawJelly(j) {
+    var type = RIGID ? j.jellyType : j.type;
+    var pts, top, bottom;
+    if (RIGID) {
+      pts = j.vertices;
+      top = j.bounds.min.y; bottom = j.bounds.max.y;
+    } else {
+      pts = S.outline(j);
+      var b = S.bounds(j); top = b.minY; bottom = b.maxY;
+    }
+    var rgb = hexToRgb(type.color);
+    var g = ctx.createLinearGradient(0, top, 0, bottom);
+    g.addColorStop(0, 'rgba(' + rgb.join(',') + ',.55)');
+    g.addColorStop(1, 'rgba(' + Math.round(rgb[0] * .7) + ',' + Math.round(rgb[1] * .7) + ',' + Math.round(rgb[2] * .7) + ',.85)');
+    tracePath(pts);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.55)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function draw() {
+    var t0 = performance.now();
+    ctx.setTransform(Math.min(window.devicePixelRatio || 1, 2), 0, 0, Math.min(window.devicePixelRatio || 1, 2), 0, 0);
+    ctx.fillStyle = C.background.skyColor;
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    ctx.save();
+    ctx.translate(viewW / 2, -camera.y);
+
+    // 皿と壁
+    ctx.fillStyle = '#d4c299';
+    var gb = ground.bounds;
+    ctx.fillRect(gb.min.x, gb.min.y, gb.max.x - gb.min.x, 400);
+    ctx.fillStyle = '#b9a682';
+    for (var wi = 0; wi < arena.walls.length; wi++) {
+      var wb = arena.walls[wi].bounds;
+      ctx.fillRect(wb.min.x, wb.min.y, wb.max.x - wb.min.x, wb.max.y - wb.min.y);
+    }
+    // 壁の高さの線（ここから上は支えが無い）
+    if (WALL > 0) {
+      ctx.strokeStyle = 'rgba(255,255,255,.75)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 6]);
+      ctx.beginPath();
+      ctx.moveTo(gb.min.x - 20, -WALL);
+      ctx.lineTo(gb.max.x + 20, -WALL);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (var i = 0; i < jellies.length; i++) drawJelly(jellies[i]);
+
+    // 落とす位置のガイド
+    ctx.strokeStyle = 'rgba(255,255,255,.5)';
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath();
+    ctx.moveTo(dropX, camera.y);
+    ctx.lineTo(dropX, camera.y + viewH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    drawMs = performance.now() - t0;
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+
+    var t0 = performance.now();
+    var dt = (1000 / 60) / SUB;
+    for (var s = 0; s < SUB; s++) Engine.update(engine, dt);
+    stepMs = performance.now() - t0;
+
+    // カメラ
+    var target = Math.min(camera.base, towerTop() - viewH * C.cameraHeadroom);
+    camera.y += (target - camera.y) * C.cameraLerp;
+
+    // 落ちたら消す
+    for (var i = jellies.length - 1; i >= 0; i--) {
+      var c = RIGID ? jellies[i].position : S.centroid(jellies[i]);
+      if (c.y > C.fallLimitY) {
+        if (RIGID) Composite.remove(engine.world, jellies[i]);
+        else Composite.remove(engine.world, jellies[i].parts.concat(jellies[i].constraints));
+        jellies.splice(i, 1);
+      }
+    }
+
+    draw();
+
+    frames++;
+    if (now - fpsAt >= 500) { fps = Math.round(frames * 1000 / (now - fpsAt)); frames = 0; fpsAt = now; }
+    var bodies = engine.world.bodies.length;
+    hud.textContent =
+      (RIGID ? '剛体（今の本番）' : 'ソフトボディ') + '\n' +
+      'fps        ' + fps + '\n' +
+      'ゼリー      ' + jellies.length + '\n' +
+      'ボディ      ' + bodies + '\n' +
+      'サブステップ ' + SUB + '\n' +
+      '物理       ' + stepMs.toFixed(2) + 'ms  (16.6が上限)\n' +
+      '描画       ' + drawMs.toFixed(2) + 'ms\n' +
+      '高さ       ' + Math.round(Math.abs(towerTop()) / C.pxPerCm) + 'cm\n' +
+      '壁         ' + (WALL / C.pxPerCm) + 'cm\n' +
+      (RIGID ? '' : 'spoke ' + OPTS.spoke + ' / cross ' + OPTS.cross);
+  }
+
+  // ---- 入力 -------------------------------------------------------------
+  function toWorldX(clientX) {
+    var r = canvas.getBoundingClientRect();
+    var x = clientX - r.left - r.width / 2;
+    var limit = r.width / 2 - C.dropperEdgeMargin;
+    return Math.max(-limit, Math.min(limit, x));
+  }
+  canvas.addEventListener('pointerdown', function (e) { dropX = toWorldX(e.clientX); canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointermove', function (e) { if (e.buttons) dropX = toWorldX(e.clientX); });
+  canvas.addEventListener('pointerup', function () { drop(dropX); });
+  document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+  document.getElementById('reset').addEventListener('click', function () { build(); });
+  document.getElementById('auto').addEventListener('click', function () {
+    var i = 0;
+    var t = setInterval(function () { drop((i % 2 ? 1 : -1) * 12); if (++i >= 20) clearInterval(t); }, 600);
+  });
+
+  window.addEventListener('resize', function () { measure(); });
+
+  measure();
+  build();
+  requestAnimationFrame(loop);
+
+  // ヘッドレス検証から叩けるようにする
+  window.PROTO = { drop: drop, jellies: function () { return jellies; }, top: towerTop, engine: function () { return engine; } };
+})();
+</script>
+</body>
+</html>
