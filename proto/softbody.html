@@ -17,6 +17,9 @@
     ?points=12    輪郭の点の数。減らすと軽いが形が粗くなる
     ?freeze=200   埋もれたゼリーを固定して軽くする。速いがゲーム性が消えるので既定は0
     ?stick=0.05   ゼリー同士のくっつき。0 で無効（塔にならず溜まるだけになる）
+    ?fps=30       更新を30fpsに落とす。電池がほぼ半分になる
+    ?dpr=1.5      描画解像度を下げる。画素数が44%減る
+    ?nosleep=1    省電力の休止を切って比較する
     ?rigid=1      比較用に剛体（今の本番と同じ角丸長方形）で積む
 
   壁がなぜ要るか:
@@ -96,6 +99,19 @@
   // ゼリー同士のくっつき。柔らかい物体は互いの上に留まらないので、
   // これが無いと塔にならず床から溜まっていく（実測: 10個で13cm、有りで25cm）。
   var STICK = num('stick', 0.05);
+
+  /**
+   * 省電力。
+   *
+   * 山は落ち着いた後も部品が微振動し続ける（平均 0.2px/step）。Matter のスリープは効かない。
+   * ただしゼリー全体の重心は 0.5秒で 0.38px しか動かない＝見た目は静止している。
+   * そこで重心の移動で判定し、止まっている間は物理も描画も丸ごと休む。
+   * プレイ中は「次をどこに落とすか考えている時間」が大半なので、ここが一番効く。
+   */
+  var SLEEP_ON = q.get('nosleep') !== '1';
+  var SLEEP_DRIFT = 1.0;    // この px 以下しか重心が動かなければ静止とみなす
+  var SLEEP_CHECK = 15;     // 何フレームごとに見るか
+  var TARGET_FPS = num('fps', 60);
   var RIGID = q.get('rigid') === '1';
   var OPTS = {
     points: Math.round(num('points', 12)), // 16→12 で 1フレーム 2.89ms→2.02ms
@@ -125,6 +141,28 @@
   var FIXED = 1000 / 60;
   var MAX_FRAMES = 3;        // 詰まったときに雪だるま式に増えるのを防ぐ
   var accumulator = 0, lastTime = 0, stepsThisFrame = 0;
+  var snap = [], sinceCheck = 0, resting = false, restedFrames = 0, liveFrames = 0, lastDrift = 0;
+
+  /** 前回の重心と比べて、どのゼリーも動いていなければ静止とみなす */
+  function checkResting() {
+    var moved = false;
+    lastDrift = 0;
+    if (snap.length !== jellies.length) moved = true;
+    for (var i = 0; i < jellies.length; i++) {
+      var c = RIGID ? jellies[i].position : S.centroid(jellies[i]);
+      if (snap[i]) {
+        var dd = Math.hypot(c.x - snap[i].x, c.y - snap[i].y);
+        if (dd > lastDrift) lastDrift = dd;
+        if (dd > SLEEP_DRIFT) moved = true;
+      } else {
+        moved = true;
+      }
+      snap[i] = { x: c.x, y: c.y };
+    }
+    snap.length = jellies.length;
+    resting = !moved;
+  }
+  function wake() { resting = false; sinceCheck = 0; accumulator = 0; }
 
   function dprOf() { return Math.min(window.devicePixelRatio || 1, DPR_CAP); }
 
@@ -174,6 +212,7 @@
     lastDrop = now;
     var t = nextType();
     var y = camera.y + C.dropperScreenY;
+    wake(); // 落としたら休止を解除する
     if (RIGID) {
       var b = Bodies.rectangle(x, y, t.w, t.h, {
         chamfer: { radius: Math.min(t.w, t.h) * C.chamferRatio },
@@ -315,14 +354,31 @@
       '\n\n「やり直す」で戻ります';
   }
 
+  var skipRaf = false;
   function loop(now) {
-    requestAnimationFrame(loop);
+    if (!skipRaf) requestAnimationFrame(loop);
 
     if (idle) { idleTick(now); lastTime = now; accumulator = 0; return; }
 
     if (!lastTime) lastTime = now;
+
+    // 30fps 指定のときは1フレームおきに何もしない（電池はほぼ半分になる）
+    if (TARGET_FPS <= 30 && (frames & 1)) { frames++; return; }
+
     accumulator += Math.min(now - lastTime, FIXED * MAX_FRAMES);
     lastTime = now;
+
+    // 止まっている間は物理も描画も丸ごと休む
+    if (SLEEP_ON) {
+      if (++sinceCheck >= SLEEP_CHECK) { sinceCheck = 0; checkResting(); }
+      if (resting) {
+        restedFrames++;
+        accumulator = 0;
+        if (now - fpsAt >= 500) { updateHud(now); }
+        return;
+      }
+    }
+    liveFrames++;
 
     var t0 = performance.now();
     var dt = FIXED / SUB;
@@ -371,11 +427,13 @@
     draw();
 
     frames++;
-    if (now - fpsAt < 500) return;   // HUD の更新は毎フレームやらない（文字の再描画も only ではない）
+    if (now - fpsAt >= 500) updateHud(now);
+  }
+
+  function updateHud(now) {
     fps = Math.round(frames * 1000 / (now - fpsAt)); frames = 0; fpsAt = now;
     var bodies = engine.world.bodies.length;
-    var frozen = 0;
-    for (var qi = 0; qi < jellies.length; qi++) if (jellies[qi]._frozen) frozen++;
+    var total = restedFrames + liveFrames;
     hud.textContent =
       (RIGID ? '剛体（今の本番）' : 'ソフトボディ') + '\n' +
       'fps        ' + fps + '\n' +
@@ -383,7 +441,9 @@
       'ボディ      ' + bodies + '\n' +
       'サブステップ ' + SUB + '\n' +
       '物理       ' + stepMs.toFixed(2) + 'ms  (' + Math.round(1000 / Math.max(fps, 1)) + 'msが上限)\n' +
-      '物理の歩数  ' + stepsThisFrame + ' /フレーム (30fpsなら2)\n' +
+      '物理の歩数  ' + stepsThisFrame + ' /フレーム\n' +
+      '休止        ' + (resting ? '中' : '－') + '  累計 ' +
+        (total ? Math.round(restedFrames / total * 100) : 0) + '% のフレームを省略\n' +
       '描画       ' + drawMs.toFixed(2) + 'ms\n' +
       '高さ       ' + Math.round(Math.abs(towerTop()) / C.pxPerCm) + 'cm\n' +
       '壁         ' + (WALL / C.pxPerCm) + 'cm\n' +
@@ -401,11 +461,13 @@
   }
   canvas.addEventListener('pointerdown', function (e) { dropX = toWorldX(e.clientX); canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener('pointermove', function (e) { if (e.buttons) dropX = toWorldX(e.clientX); });
-  canvas.addEventListener('pointerup', function () { drop(dropX); });
+  canvas.addEventListener('pointerup', function () { wake(); drop(dropX); });
   document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
   document.getElementById('reset').addEventListener('click', function () {
-    idle = null; accumulator = 0; lastTime = 0; build();
+    idle = null; accumulator = 0; lastTime = 0;
+    snap = []; resting = false; restedFrames = 0; liveFrames = 0;
+    build();
   });
   document.getElementById('idle').addEventListener('click', startIdleTest);
   // 実機が重いときの逃げ道。URLを打ち込まずに切り替えられるようにしておく
@@ -425,7 +487,19 @@
   requestAnimationFrame(loop);
 
   // ヘッドレス検証から叩けるようにする
-  window.PROTO = { drop: drop, draw: draw, glue: function () { return glue; }, jellies: function () { return jellies; }, top: towerTop, engine: function () { return engine; } };
+  // ヘッドレス検証から内部状態を読むための口。ゲーム側からは使わない
+  window.PROTO = {
+    drop: drop, draw: draw, top: towerTop,
+    glue: function () { return glue; },
+    jellies: function () { return jellies; },
+    engine: function () { return engine; },
+    stats: function () {
+      return { rested: restedFrames, live: liveFrames, resting: resting,
+               steps: stepsThisFrame, drift: lastDrift };
+    },
+    // ヘッドレスでは requestAnimationFrame が同期ループ中に発火しないので、直接回せるようにする
+    tick: function (now) { skipRaf = true; loop(now); skipRaf = false; }
+  };
 })();
 </script>
 </body>
