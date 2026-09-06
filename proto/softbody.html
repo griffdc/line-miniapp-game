@@ -13,8 +13,9 @@
     ?wall=80      土台両端の壁の高さ(px)。10px = 1cm。0 で壁なし
     ?spoke=0.35   中心へのバネ。小さいほど柔らかく潰れる
     ?cross=0.15   差し渡し。小さいほど平たく潰れる
-    ?sub=4        サブステップ。小さいと軽いが、ゼリーが止まらなくなる（4未満は不可）
-    ?points=16    輪郭の点の数。減らすと軽いが形が粗くなる
+    ?sub=3        サブステップ。小さいと軽いが、ゼリーが止まらなくなる（2未満は不可）
+    ?points=12    輪郭の点の数。減らすと軽いが形が粗くなる
+    ?freeze=200   埋もれたゼリーを固定して軽くする。速いがゲーム性が消えるので既定は0
     ?rigid=1      比較用に剛体（今の本番と同じ角丸長方形）で積む
 
   壁がなぜ要るか:
@@ -54,7 +55,8 @@
 <pre id="hud">読み込み中…</pre>
 <div id="bar">
   <button type="button" id="reset">やり直す</button>
-  <button type="button" id="auto">真ん中に20個</button>
+  <button type="button" id="auto">20個おとす</button>
+  <button type="button" id="lite">軽量に切替</button>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
@@ -73,13 +75,23 @@
   var num = function (k, d) { var v = parseFloat(q.get(k)); return isFinite(v) ? v : d; };
 
   // サブステップ。1のままだと拘束が収束せず、ゼリーは着地後も止まらず横へ流れる（実測）。
-  // 4 で 1フレーム 2.8ms、8 で 5.3ms。見た目の差は小さいので既定は 4。
-  var SUB = Math.max(1, Math.round(num('sub', 4)));
+  // 3 で 1フレーム 1.53ms、4 で 2.02ms、8 で 5.31ms。3 で挙動は保たれる。
+  var SUB = Math.max(1, Math.round(num('sub', 3)));
   var WALL = num('wall', 80);        // 壁の高さ(px)
+  /**
+   * 山の底に埋もれたゼリーを静止物に変える深さ(px)。既定は 0（無効）。
+   *
+   * ★ 速いが採用しない。30個時点の実測:
+   *     固定200px : 40.0cm / 落ちた数 0.0 / 1.79ms
+   *     固定なし   : 20.5cm / 落ちた数 13.7 / 2.89ms
+   *   固定すると山が硬い足場になり、「壁を越えると押し出されて落ちる」という
+   *   このゲームの肝が消える。速度はサブステップと点の数で稼ぐこと。
+   */
+  var FREEZE = num('freeze', 0);
   var RIGID = q.get('rigid') === '1';
   var OPTS = {
-    points: Math.round(num('points', 16)),
-    radius: num('radius', 7),
+    points: Math.round(num('points', 12)), // 16→12 で 1フレーム 2.89ms→2.02ms
+    radius: num('radius', 9),
     squareness: num('squareness', 6),
     edge: num('edge', 0.9),
     bend: num('bend', 0.4),
@@ -111,8 +123,9 @@
 
   function build() {
     engine = Engine.create({ enableSleeping: true });
-    engine.positionIterations = 10;
-    engine.velocityIterations = 8;
+    // Matter の既定値（6/4）で足りる。10/8 にしても挙動は変わらず重くなるだけだった
+    engine.positionIterations = 6;
+    engine.velocityIterations = 4;
     engine.constraintIterations = 6;
     engine.gravity.y = C.gravity;
     jellies = [];
@@ -173,26 +186,38 @@
     }
     ctx.closePath();
   }
+  // グラデーションはタイプごとに1回だけ作って使い回す。
+  // 毎フレーム・ゼリーごとに createLinearGradient を呼ぶと、スマホでは描画が跳ね上がる。
+  function gradientFor(type) {
+    if (!type._grad) {
+      var rgb = hexToRgb(type.color);
+      var g = ctx.createLinearGradient(0, -type.h / 2, 0, type.h / 2);
+      g.addColorStop(0, 'rgba(' + rgb.join(',') + ',.55)');
+      g.addColorStop(1, 'rgba(' + Math.round(rgb[0] * .7) + ',' + Math.round(rgb[1] * .7) + ',' +
+        Math.round(rgb[2] * .7) + ',.85)');
+      type._grad = g;
+    }
+    return type._grad;
+  }
+  var localPts = [];
   function drawJelly(j) {
     var type = RIGID ? j.jellyType : j.type;
-    var pts, top, bottom;
-    if (RIGID) {
-      pts = j.vertices;
-      top = j.bounds.min.y; bottom = j.bounds.max.y;
-    } else {
-      pts = S.outline(j);
-      var b = S.bounds(j); top = b.minY; bottom = b.maxY;
-    }
-    var rgb = hexToRgb(type.color);
-    var g = ctx.createLinearGradient(0, top, 0, bottom);
-    g.addColorStop(0, 'rgba(' + rgb.join(',') + ',.55)');
-    g.addColorStop(1, 'rgba(' + Math.round(rgb[0] * .7) + ',' + Math.round(rgb[1] * .7) + ',' + Math.round(rgb[2] * .7) + ',.85)');
-    tracePath(pts);
-    ctx.fillStyle = g;
+    var src = RIGID ? j.vertices : S.outline(j);
+    var c = RIGID ? j.position : S.centroid(j);
+
+    // 中心へ移動してから描く。こうするとグラデーションを局所座標で使い回せる
+    if (localPts.length !== src.length) { localPts = []; for (var i = 0; i < src.length; i++) localPts.push({ x: 0, y: 0 }); }
+    for (var k = 0; k < src.length; k++) { localPts[k].x = src[k].x - c.x; localPts[k].y = src[k].y - c.y; }
+
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    tracePath(localPts);
+    ctx.fillStyle = gradientFor(type);
     ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,.55)';
     ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.restore();
   }
 
   function draw() {
@@ -252,6 +277,19 @@
     var target = Math.min(camera.base, towerTop() - viewH * C.cameraHeadroom);
     camera.y += (target - camera.y) * C.cameraLerp;
 
+    // 山の底に埋もれたゼリーを静止物に変える（描画は続ける）
+    if (FREEZE > 0 && !RIGID) {
+      var topY = towerTop();
+      for (var fi = 0; fi < jellies.length; fi++) {
+        var fj = jellies[fi];
+        if (fj._frozen) continue;
+        if (S.bounds(fj).minY > topY + FREEZE) {
+          for (var fp = 0; fp < fj.parts.length; fp++) Matter.Body.setStatic(fj.parts[fp], true);
+          fj._frozen = true;
+        }
+      }
+    }
+
     // 落ちたら消す
     for (var i = jellies.length - 1; i >= 0; i--) {
       var c = RIGID ? jellies[i].position : S.centroid(jellies[i]);
@@ -265,8 +303,11 @@
     draw();
 
     frames++;
-    if (now - fpsAt >= 500) { fps = Math.round(frames * 1000 / (now - fpsAt)); frames = 0; fpsAt = now; }
+    if (now - fpsAt < 500) return;   // HUD の更新は毎フレームやらない（文字の再描画も only ではない）
+    fps = Math.round(frames * 1000 / (now - fpsAt)); frames = 0; fpsAt = now;
     var bodies = engine.world.bodies.length;
+    var frozen = 0;
+    for (var qi = 0; qi < jellies.length; qi++) if (jellies[qi]._frozen) frozen++;
     hud.textContent =
       (RIGID ? '剛体（今の本番）' : 'ソフトボディ') + '\n' +
       'fps        ' + fps + '\n' +
@@ -277,6 +318,7 @@
       '描画       ' + drawMs.toFixed(2) + 'ms\n' +
       '高さ       ' + Math.round(Math.abs(towerTop()) / C.pxPerCm) + 'cm\n' +
       '壁         ' + (WALL / C.pxPerCm) + 'cm\n' +
+      '固定済み    ' + frozen + ' / ' + jellies.length + '\n' +
       (RIGID ? '' : 'spoke ' + OPTS.spoke + ' / cross ' + OPTS.cross);
   }
 
@@ -293,6 +335,11 @@
   document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
   document.getElementById('reset').addEventListener('click', function () { build(); });
+  // 実機が重いときの逃げ道。URLを打ち込まずに切り替えられるようにしておく
+  document.getElementById('lite').addEventListener('click', function () {
+    var lite = OPTS.points <= 10 && SUB <= 2;
+    location.search = lite ? '?points=12&sub=3' : '?points=10&sub=2&radius=11';
+  });
   document.getElementById('auto').addEventListener('click', function () {
     var i = 0;
     var t = setInterval(function () { drop((i % 2 ? 1 : -1) * 12); if (++i >= 20) clearInterval(t); }, 600);
@@ -305,7 +352,7 @@
   requestAnimationFrame(loop);
 
   // ヘッドレス検証から叩けるようにする
-  window.PROTO = { drop: drop, jellies: function () { return jellies; }, top: towerTop, engine: function () { return engine; } };
+  window.PROTO = { drop: drop, draw: draw, jellies: function () { return jellies; }, top: towerTop, engine: function () { return engine; } };
 })();
 </script>
 </body>
