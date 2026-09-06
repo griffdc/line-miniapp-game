@@ -44,13 +44,15 @@
   }
   #bar {
     position: fixed; left: 0; right: 0; bottom: 0;
-    display: flex; gap: 8px; padding: 10px calc(10px + env(safe-area-inset-left, 0px))
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 10px calc(10px + env(safe-area-inset-left, 0px))
       calc(10px + env(safe-area-inset-bottom, 0px));
   }
   button {
-    flex: 1; min-height: 44px; border: 0; border-radius: 8px;
-    background: rgba(255,255,255,.9); color: #10131a; font-size: 14px; font-weight: 700;
+    flex: 1 1 30%; min-height: 44px; border: 0; border-radius: 8px;
+    background: rgba(255,255,255,.9); color: #10131a; font-size: 13px; font-weight: 700;
   }
+  button[aria-pressed="true"] { background: #06c755; color: #fff; }
 </style>
 </head>
 <body>
@@ -58,6 +60,7 @@
 <canvas id="c"></canvas>
 <pre id="hud">読み込み中…</pre>
 <div id="bar">
+  <button type="button" id="wall" aria-pressed="true">壁 ON</button>
   <button type="button" id="reset">やり直す</button>
   <button type="button" id="auto">20個おとす</button>
   <button type="button" id="lite">軽量に切替</button>
@@ -82,7 +85,10 @@
   // サブステップ。1のままだと拘束が収束せず、ゼリーは着地後も止まらず横へ流れる（実測）。
   // 3 で 1フレーム 1.53ms、4 で 2.02ms、8 で 5.31ms。3 で挙動は保たれる。
   var SUB = Math.max(1, Math.round(num('sub', 3)));
-  var WALL = num('wall', 80);        // 壁の高さ(px)
+  // 壁の高さ(px)。0 を渡すと最初から壁なしで始まるが、ボタンで出せるように高さは保持する。
+  var WALL = num('wall', 80);
+  var WALL_H = WALL > 0 ? WALL : 80;
+  var wallsOn = WALL > 0;
   /**
    * 山の底に埋もれたゼリーを静止物に変える深さ(px)。既定は 0（無効）。
    *
@@ -186,9 +192,9 @@
     engine.gravity.y = C.gravity;
     jellies = [];
     var w = viewW * C.background.plateWidth;
-    arena = S.arena(w, WALL, 10);
+    arena = S.arena(w, WALL_H, 10);
     ground = arena.ground;
-    Composite.add(engine.world, arena.all);
+    Composite.add(engine.world, wallsOn ? arena.all : [arena.ground]);
     glue = (!RIGID && STICK > 0) ? S.sticky(engine, { stick: STICK }) : null;
     camera.y = camera.base;
   }
@@ -292,13 +298,15 @@
     ctx.fillStyle = '#d4c299';
     var gb = ground.bounds;
     ctx.fillRect(gb.min.x, gb.min.y, gb.max.x - gb.min.x, 400);
-    ctx.fillStyle = '#b9a682';
-    for (var wi = 0; wi < arena.walls.length; wi++) {
-      var wb = arena.walls[wi].bounds;
-      ctx.fillRect(wb.min.x, wb.min.y, wb.max.x - wb.min.x, wb.max.y - wb.min.y);
+    if (wallsOn) {
+      ctx.fillStyle = '#b9a682';
+      for (var wi = 0; wi < arena.walls.length; wi++) {
+        var wb = arena.walls[wi].bounds;
+        ctx.fillRect(wb.min.x, wb.min.y, wb.max.x - wb.min.x, wb.max.y - wb.min.y);
+      }
     }
     // 壁の高さの線（ここから上は支えが無い）
-    if (WALL > 0) {
+    if (wallsOn) {
       ctx.strokeStyle = 'rgba(255,255,255,.75)';
       ctx.lineWidth = 2;
       ctx.setLineDash([10, 6]);
@@ -446,7 +454,7 @@
         (total ? Math.round(restedFrames / total * 100) : 0) + '% のフレームを省略\n' +
       '描画       ' + drawMs.toFixed(2) + 'ms\n' +
       '高さ       ' + Math.round(Math.abs(towerTop()) / C.pxPerCm) + 'cm\n' +
-      '壁         ' + (WALL / C.pxPerCm) + 'cm\n' +
+      '壁         ' + (wallsOn ? (WALL_H / C.pxPerCm) + 'cm' : 'なし') + '\n' +
       'くっつき    ' + (glue ? glue.count() + '本 (強さ ' + STICK + ')' : 'なし') + '\n' +
       '解像度      ' + Math.round(viewW * dprOf()) + 'x' + Math.round(viewH * dprOf()) + ' dpr' + dprOf() + '\n' +
       (RIGID ? '' : 'spoke ' + OPTS.spoke + ' / cross ' + OPTS.cross);
@@ -470,6 +478,21 @@
     build();
   });
   document.getElementById('idle').addEventListener('click', startIdleTest);
+
+  // 積んだ状態のまま壁を出し入れする。外した瞬間に山が広がるのが見える
+  var wallBtn = document.getElementById('wall');
+  function renderWallBtn() {
+    wallBtn.textContent = wallsOn ? '壁 ON' : '壁 OFF';
+    wallBtn.setAttribute('aria-pressed', wallsOn ? 'true' : 'false');
+  }
+  wallBtn.addEventListener('click', function () {
+    wallsOn = !wallsOn;
+    if (wallsOn) Composite.add(engine.world, arena.walls);
+    else Composite.remove(engine.world, arena.walls);
+    wake();            // 休止していても動き出させる
+    renderWallBtn();
+  });
+  renderWallBtn();
   // 実機が重いときの逃げ道。URLを打ち込まずに切り替えられるようにしておく
   document.getElementById('lite').addEventListener('click', function () {
     var lite = OPTS.points <= 10 && SUB <= 2;
